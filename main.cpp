@@ -17,6 +17,7 @@ Decoder Speed: 104.368 MBytes/sec
 )
  */
 
+
 std::string to_string(__uint128_t x) {
     std::string s;
     __uint128_t mask = 0xf;
@@ -401,8 +402,114 @@ void self_check() {
         == to_string(s.L_backward(234123412341 ^ 432413241)));
 }
 
+/*
 int main() {
     self_check();
     measure();
     return 0;
+}
+*/
+
+class OMAC1 {
+/// GOST 34.13-2015 :: 5.6
+
+public:
+    Kuznyechik E;
+    size_t s;
+
+    OMAC1(__uint128_t K_1, __uint128_t K_0, size_t s) : s(s) {
+        E.key_extension(K_1, K_0);
+    }
+
+    __uint128_t encode(const char* const data, size_t len) {
+        __uint128_t B_128 = 128 + 4 + 2 + 1;  // 10000111;
+        __uint128_t R = E.encode(0);
+
+        // std::cout << "R:" << to_string(R) << "\n";
+
+        __uint128_t MSB1 = R >> 127;
+        __uint128_t K1 = (MSB1) ? ((R << 1) ^ B_128) : (R << 1);
+
+        MSB1 = K1 >> 127;
+        __uint128_t K2 = (MSB1) ? ((K1 << 1) ^ B_128) : (K1 << 1);
+
+        // std::cout << "K1:" << to_string(K1) << "\n";
+        // std::cout << "K2:" << to_string(K2) << "\n";
+
+        std::vector<__uint128_t> P;
+        bool truncated = false;
+        size_t size = len / 16 + ((len % 16) ? 1 : 0);
+        P.reserve(size);
+
+        __uint128_t buffer = 0;
+        size_t bytes = 0;
+        for (size_t shift = 0; shift < len; ++shift) {
+            buffer <<= 8;
+            buffer ^= data[shift] & 0xff;
+            // std::cout << to_string(buffer) << "\n";
+            if (bytes == 15) {
+                P.push_back(buffer);
+                bytes = 0;
+                buffer = 0;
+            } else {
+                ++bytes;
+            }
+        }
+
+        if (bytes != 0) {
+            truncated = true;
+            buffer <<= 1;
+            buffer ^= 1;
+            buffer <<= 7 + (15 - bytes) * 8;
+            P.push_back(buffer);
+        }
+
+        for (__uint128_t P_i : P) {
+            // std::cout << "P_i:" << to_string(P_i) << "\n";
+        }
+        __uint128_t C_i = 0;
+        for (size_t i = 0; i + 1 < P.size(); ++i) {
+            // std::cout << "in:" << to_string(C_i ^ P[i]) << "\n";
+            C_i = E.encode(C_i ^ P[i]);
+            // std::cout << "C_i:" << to_string(C_i) << "\n";
+        }
+
+        if (truncated) {
+            return E.encode(P.back() ^ C_i ^ K2) >> (128 - s);
+        } else {
+            return E.encode(P.back() ^ C_i ^ K1) >> (128 - s);
+        }
+    }
+
+    static void self_check() {
+        __uint128_t K_1 = from_string("8899aabbccddeeff0011223344556677");
+        __uint128_t K_0 = from_string("fedcba98765432100123456789abcdef");
+
+        OMAC1 omac(K_1, K_0, 64);
+
+        __uint128_t P[4] = {
+                from_string("1122334455667700ffeeddccbbaa9988"),
+                from_string("00112233445566778899aabbcceeff0a"),
+                from_string("112233445566778899aabbcceeff0a00"),
+                from_string("2233445566778899aabbcceeff0a0011")
+        };
+
+        char data[64];
+
+        for (size_t i = 0; i < 4; ++i) {
+            for (size_t j = 0; j < 16; ++j) {
+                data[i * 16 + j] = static_cast<char>((P[i] >> ((15 - j) * 8)) & 0xff);
+            }
+        }
+
+        assert(to_string(omac.encode(data, 64)).substr(16, 16) == "336f4d296059fbe3");
+
+        // std::cout << to_string(omac1(K_1, K_0, data, 64, 64)).substr(16, 16);
+    }
+};
+
+
+
+int main() {
+    OMAC1::self_check();
 }
