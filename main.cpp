@@ -18,26 +18,25 @@ Decoder Speed: 104.368 MBytes/sec
  */
 
 
-std::string to_string(__uint128_t x) {
+std::string to_string(__uint128_t x, char a = 'a') {
     std::string s;
     __uint128_t mask = 0xf;
     for (int i = 31; i >= 0; --i) {
         uint8_t block = static_cast<uint8_t>((x & (mask << (i * 4))) >> (i * 4));
-        char c = ((block < 10) ? ('0' + block) : ('a' + static_cast<uint8_t>(block - 10)));
+        char c = ((block < 10) ? ('0' + block) : (a + static_cast<uint8_t>(block - 10)));
         s += c;
     }
     return s;
 }
 
-__uint128_t from_string(std::string s) {
+__uint128_t from_string(std::string s, char a = 'a') {
     __uint128_t result = 0;
     for (size_t i = 0; i < 32; ++i) {
-        __uint128_t block = static_cast<__uint128_t>((s[i] < 'a') ? (s[i] - '0') : (s[i] - 'a' + 10));
+        __uint128_t block = static_cast<__uint128_t>((s[i] < a) ? (s[i] - '0') : (s[i] - a + 10));
         result = (result << 4) + block;
     }
     return result;
 }
-
 template <int k>
 class GPolynom{
 public:
@@ -508,8 +507,66 @@ public:
     }
 };
 
+class CTR_ACPKM {
+public:
+    size_t blocks_per_key;
+    Kuznyechik e;
+    const __uint128_t D1 = from_string("808182838485868788898A8B8C8D8E8F", 'A');
+    const __uint128_t D0 = from_string("909192939495969798999A9B9C9D9E9F", 'A');
 
+    CTR_ACPKM(size_t blocks_per_key, __uint128_t K1, __uint128_t K0) : blocks_per_key(blocks_per_key) {
+        e.key_extension(K1, K0);
+
+    }
+
+    std::vector<__uint128_t> code(__uint64_t IV, const std::vector<__uint128_t> &msg) {
+        std::vector<__uint128_t> result;
+        Kuznyechik e_i = e;
+        __uint128_t CTR_i = static_cast<__uint128_t>(IV) << 64;
+        for (size_t i = 0; i < msg.size(); i += blocks_per_key) {
+            for (size_t shift = 0; (shift < blocks_per_key) && (i + shift < msg.size()); ++shift) {
+                result.push_back(msg[i + shift] ^ e.encode(CTR_i));
+                ++CTR_i;
+            }
+            __uint128_t K1 = e.encode(D1);
+            __uint128_t K0 = e.encode(D0);
+            std::cout << to_string(K1, 'A') << " " << to_string(K0, 'A') << "\n";
+            e.key_extension(K1, K0);
+        }
+        return result;
+    }
+
+    static void self_sheck() {
+        CTR_ACPKM ctr(2, from_string("8899AABBCCDDEEFF0011223344556677", 'A'), from_string("FEDCBA98765432100123456789ABCDEF", 'A'));
+        __uint64_t IV = 0x1234567890ABCEF0;
+        std::vector<__uint128_t> msg = {
+                from_string("1122334455667700FFEEDDCCBBAA9988", 'A'),
+                from_string("00112233445566778899AABBCCEEFF0A", 'A'),
+                from_string("112233445566778899AABBCCEEFF0A00", 'A'),
+                from_string("2233445566778899AABBCCEEFF0A0011", 'A'),
+                from_string("33445566778899AABBCCEEFF0A001122", 'A'),
+                from_string("445566778899AABBCCEEFF0A00112233", 'A'),
+                from_string("5566778899AABBCCEEFF0A0011223344", 'A')
+        };
+        std::vector<__uint128_t> result = ctr.code(IV, msg);
+        assert(result.size() == msg.size());
+        std::vector<__uint128_t> true_result = {
+                from_string("F195D8BEC10ED1DBD57B5FA240BDA1B8", 'A'),
+                from_string("85EEE733F6A13E5DF33CE4B33C45DEE4", 'A'),
+                from_string("4BCEEB8F646F4C55001706275E85E800", 'A'),
+                from_string("587C4DF568D094393E4834AFD0805046", 'A'),
+                from_string("CF30F57686AEECE11CFC6C316B8A896E", 'A'),
+                from_string("DFFD07EC813636460C4F3B743423163E", 'A'),
+                from_string("6409A9C282FAC8D469D221E7FBD6DE5D", 'A')
+        };
+
+        for (size_t i = 0; i <  msg.size(); ++i) {
+            assert(result[i] == true_result[i]);
+        }
+    }
+};
 
 int main() {
     OMAC1::self_check();
+    CTR_ACPKM::self_sheck();
 }
