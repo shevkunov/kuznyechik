@@ -481,6 +481,8 @@ public:
     }
 
     static void self_check() {
+        std::cout << "___OMAC1_SELF-CHECK___\n";
+
         __uint128_t K_1 = from_string("8899aabbccddeeff0011223344556677");
         __uint128_t K_0 = from_string("fedcba98765432100123456789abcdef");
 
@@ -525,18 +527,20 @@ public:
         __uint128_t CTR_i = static_cast<__uint128_t>(IV) << 64;
         for (size_t i = 0; i < msg.size(); i += blocks_per_key) {
             for (size_t shift = 0; (shift < blocks_per_key) && (i + shift < msg.size()); ++shift) {
-                result.push_back(msg[i + shift] ^ e.encode(CTR_i));
+                result.push_back(msg[i + shift] ^ e_i.encode(CTR_i));
                 ++CTR_i;
             }
-            __uint128_t K1 = e.encode(D1);
-            __uint128_t K0 = e.encode(D0);
+            __uint128_t K1 = e_i.encode(D1);
+            __uint128_t K0 = e_i.encode(D0);
             std::cout << to_string(K1, 'A') << " " << to_string(K0, 'A') << "\n";
-            e.key_extension(K1, K0);
+            e_i.key_extension(K1, K0);
         }
         return result;
     }
 
-    static void self_sheck() {
+    static void self_check() {
+        std::cout << "___CTR_ACPKM_SELF-CHECK___\n";
+
         CTR_ACPKM ctr(2, from_string("8899AABBCCDDEEFF0011223344556677", 'A'), from_string("FEDCBA98765432100123456789ABCDEF", 'A'));
         __uint64_t IV = 0x1234567890ABCEF0;
         std::vector<__uint128_t> msg = {
@@ -566,7 +570,92 @@ public:
     }
 };
 
+class OMAC_ACPKM {
+public:
+    /// http://wwwold.tc26.ru/standard/draft/%D0%A2%D0%9A26%D0%90%D0%9B%D0%93_II.PDF
+
+    CTR_ACPKM ctr;
+    size_t blocks_per_key;
+    size_t s;
+    size_t N;
+
+    OMAC_ACPKM(size_t s, size_t N, size_t T_star, __uint128_t K1, __uint128_t K0)
+        : ctr(T_star / 128, K1, K0), blocks_per_key(N / 128), s(s), N(N)  {
+    }
+
+    __uint128_t encode(std::vector<__uint128_t> Pi, bool full) {
+        size_t m = 128 * Pi.size();
+        size_t l = m / N + ((m % N) ? 1 : 0);
+        size_t q = m / s + ((m % s) ? 1 : 0);
+
+        auto keys = ctr.code(~static_cast<__uint64_t>(0), std::vector<__uint128_t>(l * 3));
+
+        auto MSB = [](__uint128_t x, size_t s) {
+                return x >> (128 - s);
+        };
+
+        __uint128_t C_i = 0;
+        for (size_t i = 0; 3 * i < keys.size(); ++i) {
+            __uint128_t K_hi = keys[3 * i];
+            __uint128_t K_lo = keys[3 * i + 1];
+
+            __uint128_t K_1 = keys[3 * i + 2];
+
+            std::cout << "K_hi:" << to_string(K_hi) << "\n";
+            std::cout << "K_lo:" << to_string(K_lo) << "\n";
+            std::cout << "K_1 :" << to_string(K_1) << "\n";
+
+            __uint128_t B_128 = 128 + 4 + 2 + 1;
+            __uint128_t K_2 = (!MSB(K_1, 1)) ? (K_1 << 1) : ((K_1 << 1) ^ B_128);
+
+            __uint128_t K_tile = (full) ? K_1 : K_2;
+
+            std::cout << "K_2 :" << to_string(K_2) << "\n";
+            std::cout << "K_' :" << to_string(K_tile) << "\n";
+
+            Kuznyechik e;
+            e.key_extension(K_hi, K_lo);
+            for (size_t shift = 0; (shift < blocks_per_key) && (blocks_per_key * i + shift < Pi.size()); ++shift) {
+                bool last = blocks_per_key * i + shift + 1 == Pi.size();
+                if (!last) {
+                    C_i = e.encode(C_i ^ Pi[blocks_per_key * i + shift]);
+                } else {
+                    C_i = e.encode(C_i ^ Pi[blocks_per_key * i + shift] ^ K_tile);
+                }
+
+                std::cout << "C_i:" << to_string(C_i) << "\n";
+            }
+        }
+
+        return MSB(C_i, s);
+    }
+
+    static void self_check() {
+        std::cout << "___OMAC_ACPKM_SELF-CHECK___\n";
+
+        /// First test
+        OMAC_ACPKM omac(128, 256, 768, from_string("8899AABBCCDDEEFF0011223344556677", 'A'), from_string("FEDCBA98765432100123456789ABCDEF", 'A'));
+
+        std::vector<__uint128_t> open_1 = {
+            from_string("1122334455667700FFEEDDCCBBAA9988", 'A'),
+            from_string("001122334455667780000000000000000", 'A')
+        };
+        assert(omac.encode(open_1, false) == from_string("B5367F47B62B995EEB2A648C5843145E", 'A'));
+
+        /// Second test
+        std::vector<__uint128_t> open_2 = {
+            from_string("1122334455667700FFEEDDCCBBAA9988", 'A'),
+            from_string("00112233445566778899AABBCCEEFF0A", 'A'),
+            from_string("112233445566778899AABBCCEEFF0A00", 'A'),
+            from_string("2233445566778899AABBCCEEFF0A0011", 'A'),
+            from_string("33445566778899AABBCCEEFF0A001122", 'A')
+        };
+        assert(omac.encode(open_2, true) == from_string("FBB8DCEE45BEA67C35F58C5700898E5D", 'A'));
+    }
+};
+
 int main() {
     OMAC1::self_check();
-    CTR_ACPKM::self_sheck();
+    CTR_ACPKM::self_check();
+    OMAC_ACPKM::self_check();
 }
